@@ -8,13 +8,17 @@ using EPiServer.Globalization;
 using EPiServer.Tracking.Commerce;
 using EPiServer.Web.Mvc;
 using EPiServer.Web.Routing;
+using Foundation.Cms.Extensions;
+using Foundation.Cms.Settings;
+using Foundation.Commerce;
 using Foundation.Commerce.Customer.Services;
-using Foundation.Commerce.Models.Catalog;
-using Foundation.Commerce.Models.Pages;
-using Foundation.Commerce.Order;
-using Foundation.Commerce.Order.Services;
-using Foundation.Commerce.Order.ViewModels;
-using Foundation.Commerce.Personalization;
+using Foundation.Features.CatalogContent.Bundle;
+using Foundation.Features.CatalogContent.Services;
+using Foundation.Features.Checkout;
+using Foundation.Features.Checkout.Services;
+using Foundation.Features.Checkout.ViewModels;
+using Foundation.Features.Settings;
+using Foundation.Personalization;
 using Mediachase.Commerce;
 using Mediachase.Commerce.Catalog;
 using System;
@@ -35,7 +39,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
         private CartWithValidationIssues _cart;
         private readonly IOrderRepository _orderRepository;
         private readonly ICommerceTrackingService _trackingService;
-        readonly CartViewModelFactory _cartViewModelFactory;
+        private readonly CartViewModelFactory _cartViewModelFactory;
         private readonly IQuickOrderService _quickOrderService;
         private readonly ReferenceConverter _referenceConverter;
         private readonly ICustomerService _customerService;
@@ -44,6 +48,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
         private readonly LanguageResolver _languageResolver;
         private readonly ICurrentMarket _currentMarket;
         private readonly FilterPublished _filterPublished;
+        private readonly ISettingsService _settingsService;
 
         public WishListController(
             IContentLoader contentLoader,
@@ -58,7 +63,8 @@ namespace Foundation.Features.NamedCarts.Wishlist
             IRelationRepository relationRepository,
             LanguageResolver languageResolver,
             ICurrentMarket currentMarket,
-            FilterPublished filterPublished)
+            FilterPublished filterPublished,
+            ISettingsService settingsService)
         {
             _contentLoader = contentLoader;
             _cartService = cartService;
@@ -73,6 +79,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
             _languageResolver = languageResolver;
             _currentMarket = currentMarket;
             _filterPublished = filterPublished;
+            _settingsService = settingsService;
         }
 
         [HttpGet]
@@ -141,7 +148,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
                 {
                     foreach (var v in allNewCodes)
                     {
-                        result = _cartService.AddToCart(WishList.Cart, v, 1, "delivery", "");
+                        result = _cartService.AddToCart(WishList.Cart, new RequestParamsToCart { Code = v, Quantity = 1, Store = "delivery", SelectedStore = "" });
                         if (result.ValidationMessages.Count > 0)
                         {
                             message += string.Join("\n", result.ValidationMessages);
@@ -156,7 +163,8 @@ namespace Foundation.Features.NamedCarts.Wishlist
                     return Json(new ChangeCartJsonResult { StatusCode = 0, Message = productName + " already exist in the wishlist." });
                 }
 
-                result = _cartService.AddToCart(WishList.Cart, param.Code, 1, "delivery", "");
+                result = _cartService.AddToCart(WishList.Cart,
+                    new RequestParamsToCart { Code = param.Code, Quantity = 1, Store = "delivery", SelectedStore = "" });
             }
 
             if (result.EntriesAddedToCart)
@@ -189,11 +197,11 @@ namespace Foundation.Features.NamedCarts.Wishlist
             _cartService.ChangeCartItem(WishList.Cart, 0, param.Code, param.Quantity, param.Size, param.NewSize);
             _orderRepository.Save(WishList.Cart);
             _trackingService.TrackWishlist(HttpContext);
-            var startPage = _contentLoader.Get<CommerceHomePage>(ContentReference.StartPage);
+            var referencePages = _settingsService.GetSiteSettings<ReferencePageSettings>();
             WishListPage wishlistPage = null;
-            if (startPage.WishlistPage != null)
+            if (!referencePages?.WishlistPage.IsNullOrEmpty() ?? false)
             {
-                wishlistPage = _contentLoader.Get<WishListPage>(startPage.WishlistPage);
+                wishlistPage = _contentLoader.Get<WishListPage>(referencePages.WishlistPage);
             }
 
             if (param.RequestFrom.Equals("axios", StringComparison.OrdinalIgnoreCase))
@@ -204,7 +212,6 @@ namespace Foundation.Features.NamedCarts.Wishlist
 
             return Redirect(_urlResolver.GetUrl(wishlistPage));
         }
-
 
         [HttpPost]
         public async Task<JsonResult> RemoveWishlistItem(RequestParamsToCart param) // only use Code
@@ -236,9 +243,9 @@ namespace Foundation.Features.NamedCarts.Wishlist
             {
                 _orderRepository.Delete(WishList.Cart.OrderLink);
             }
-            var startPage = _contentLoader.Get<CommerceHomePage>(ContentReference.StartPage);
+            var referencePages = _settingsService.GetSiteSettings<ReferencePageSettings>();
 
-            return RedirectToAction("Index", new { Node = startPage.WishlistPage });
+            return RedirectToAction("Index", new { Node = referencePages?.WishlistPage ?? ContentReference.StartPage });
         }
 
         [HttpPost]
@@ -267,7 +274,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
                 var responseMessage = _quickOrderService.ValidateProduct(variationReference, Convert.ToDecimal(quantity), sku);
                 if (string.IsNullOrEmpty(responseMessage))
                 {
-                    if (_cartService.AddToCart(WishList.Cart, sku, 1, "delivery", "").EntriesAddedToCart)
+                    if (_cartService.AddToCart(WishList.Cart, new RequestParamsToCart { Code = sku, Quantity = 1, Store = "delivery", SelectedStore = "" }).EntriesAddedToCart)
                     {
                         _orderRepository.Save(WishList.Cart);
                     }
@@ -277,7 +284,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
                     returnedMessages.Add(responseMessage);
                 }
             }
-            Session["ErrorMesages"] = returnedMessages;
+            Session[Constant.ErrorMessages] = returnedMessages;
 
             return Json(returnedMessages, JsonRequestBehavior.AllowGet);
         }
@@ -297,8 +304,8 @@ namespace Foundation.Features.NamedCarts.Wishlist
                 _orderRepository.Save(userWishCart);
             }
 
-            var startPage = _contentLoader.Get<CommerceHomePage>(ContentReference.StartPage);
-            var pageUrl = _urlResolver.GetUrl(startPage.OrganizationOrderPadsPage);
+            var referencePages = _settingsService.GetSiteSettings<ReferencePageSettings>();
+            var pageUrl = _urlResolver.GetUrl(referencePages?.OrganizationOrderPadsPage ?? ContentReference.StartPage);
 
             return Redirect(pageUrl);
         }
@@ -308,7 +315,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
         public ActionResult RequestWishListQuote()
         {
             var currentCustomer = _customerService.GetCurrentContact();
-            var startPage = _contentLoader.Get<CommerceHomePage>(ContentReference.StartPage);
+            var referencePages = _settingsService.GetSiteSettings<ReferencePageSettings>();
 
             var wishListCart = _cartService.LoadWishListCardByCustomerId(currentCustomer.ContactId);
             if (wishListCart != null)
@@ -326,7 +333,7 @@ namespace Foundation.Features.NamedCarts.Wishlist
                 return RedirectToAction("Index", "WishList");
             }
 
-            return RedirectToAction("Index", new { Node = startPage.OrderHistoryPage });
+            return RedirectToAction("Index", new { Node = referencePages?.OrderHistoryPage ?? ContentReference.StartPage });
         }
 
         [HttpPost]
@@ -347,7 +354,8 @@ namespace Foundation.Features.NamedCarts.Wishlist
 
             foreach (var lineitem in allLineItem)
             {
-                var result = _cartService.AddToCart(Cart.Cart, lineitem.Code, lineitem.Quantity, "delivery", "");
+                var result = _cartService.AddToCart(Cart.Cart,
+                    new RequestParamsToCart { Code = lineitem.Code, Quantity = lineitem.Quantity, Store = "delivery", SelectedStore = "", DynamicCodes = lineitem.Properties["VariantOptionCodes"]?.ToString().Split(',').ToList() });
                 entriesAddedToCart &= result.EntriesAddedToCart;
                 validationMessage += result.GetComposedValidationMessage();
             }
